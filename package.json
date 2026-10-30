@@ -1,0 +1,8 @@
+{
+  "name": "intersfera",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "vercel-build": "node scripts/vercel-build.mjs"
+  }
+}

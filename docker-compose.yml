@@ -1,0 +1,52 @@
+services:
+  db:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_USER: crm
+      POSTGRES_PASSWORD: crm
+      POSTGRES_DB: intersfera
+    ports:
+      - '5433:5432'
+    volumes:
+      - db_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ['CMD-SHELL', 'pg_isready -U crm -d intersfera']
+      interval: 5s
+      timeout: 5s
+      retries: 5
+
+  api:
+    build: ./backend
+    env_file:
+      - ./backend/.env
+    environment:
+      DATABASE_URL: postgresql://crm:crm@db:5432/intersfera?schema=public
+      DIRECT_URL: postgresql://crm:crm@db:5432/intersfera?schema=public
+    ports:
+      - '4001:4000'
+    depends_on:
+      db:
+        condition: service_healthy
+    volumes:
+      - ./backend:/app
+      - /app/node_modules
+      - uploads_data:/app/uploads
+
+  web:
+    build: ./frontend
+    env_file:
+      - ./frontend/.env
+    environment:
+      PORT: 5174
+      VITE_API_URL: http://localhost:4001/api
+    ports:
+      - '5174:5174'
+    depends_on:
+      - api
+    volumes:
+      - ./frontend:/app
+      - /app/node_modules
+
+volumes:
+  db_data:
+  uploads_data:
