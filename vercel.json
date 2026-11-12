@@ -1,0 +1,17 @@
+{
+  "$schema": "https://openapi.vercel.sh/vercel.json",
+  "framework": null,
+  "installCommand": "npm install --include=dev --prefix backend && npm install --prefix frontend",
+  "buildCommand": "node scripts/vercel-build.mjs",
+  "outputDirectory": "frontend/dist",
+  "rewrites": [
+    { "source": "/api/(.*)", "destination": "/api" },
+    { "source": "/((?!api/).*)", "destination": "/index.html" }
+  ],
+  "functions": {
+    "api/index.ts": {
+      "maxDuration": 30,
+      "includeFiles": "{backend/node_modules/.prisma/**,backend/node_modules/@prisma/client/**,backend/node_modules/dejavu-fonts-ttf/ttf/DejaVuSans.ttf,backend/node_modules/dejavu-fonts-ttf/ttf/DejaVuSans-Bold.ttf,backend/assets/**}"
+    }
+  }
+}

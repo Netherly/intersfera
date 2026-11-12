@@ -1,0 +1,192 @@
+// Схема БД intersfera.
+// Статусы и типы файлов — строки, допустимые значения проверяет Zod.
+
+generator client {
+  provider      = "prisma-client-js"
+  // native — машина сборки. rhel — среда функций Vercel (Amazon Linux, OpenSSL 3).
+  binaryTargets = ["native", "rhel-openssl-3.0.x"]
+}
+
+datasource db {
+  provider  = "postgresql"
+  url       = env("DATABASE_URL")
+  directUrl = env("DIRECT_URL")
+}
+
+// super_admin — полный доступ. Обычный пользователь получает права через role_id.
+enum Role {
+  user
+  super_admin
+}
+
+model AppRole {
+  id          Int      @id @default(autoincrement())
+  name        String   @unique
+  permissions String[]
+  is_system   Boolean  @default(false)
+  created_at  DateTime @default(now())
+  updated_at  DateTime @updatedAt
+
+  users User[]
+
+  @@map("roles")
+}
+
+model User {
+  id            Int      @id @default(autoincrement())
+  full_name     String
+  login         String   @unique
+  password_hash String
+  role          Role     @default(user)
+  role_id       Int?
+  departments   String[] @default([])
+  is_active     Boolean  @default(true)
+  created_at    DateTime @default(now())
+  updated_at    DateTime @updatedAt
+
+  role_ref         AppRole?      @relation(fields: [role_id], references: [id])
+  assigned_appeals Appeal[]      @relation("AppealAssignee")
+  created_appeals  Appeal[]      @relation("AppealCreator")
+  uploaded_files   AppealFile[]
+  appeal_events    AppealEvent[]
+  audit_events     AuditEvent[]
+  checked_appeals  Appeal[]      @relation("AppealChecker")
+
+  @@map("users")
+}
+
+// Справочник категорий. На обращении хранится название, чтобы переименование
+// можно было протянуть по реестру отдельным обновлением.
+model Category {
+  id         Int      @id @default(autoincrement())
+  name       String   @unique
+  is_active  Boolean  @default(true)
+  created_at DateTime @default(now())
+
+  @@map("categories")
+}
+
+model Appeal {
+  id               Int      @id @default(autoincrement())
+  incoming_number  String   @unique
+  appeal_date      DateTime @db.Date
+  sender                String    @default("")
+  sender_type           String    @default("")
+  object_address        String    @default("")
+  correspondent_number  String    @default("")
+  correspondent_date    DateTime? @db.Date
+  reply_deadline        DateTime? @db.Date
+  reply_email           String    @default("")
+  outgoing_number       String    @default("")
+  outgoing_date         DateTime? @db.Date
+  category              String    @default("")
+  recognized_text       String    @default("") @db.Text
+  summary               String    @default("") @db.Text
+  draft_reply           String    @default("") @db.Text
+  final_reply           String    @default("") @db.Text
+  reply_checked_text    String    @default("") @db.Text
+  reply_checked_at      DateTime?
+  reply_checked_by_id   Int?
+  status                String    @default("Новое")
+  direction             String    @default("incoming")
+  assignee_id      Int?
+  created_by_id    Int
+  created_at       DateTime @default(now())
+  updated_at       DateTime @updatedAt
+
+  assignee         User?         @relation("AppealAssignee", fields: [assignee_id], references: [id])
+  created_by       User          @relation("AppealCreator", fields: [created_by_id], references: [id])
+  reply_checked_by User?         @relation("AppealChecker", fields: [reply_checked_by_id], references: [id], onDelete: SetNull)
+  files      AppealFile[]
+  events     AppealEvent[]
+
+  @@index([status])
+  @@index([direction])
+  @@index([assignee_id])
+  @@index([appeal_date])
+  @@index([category])
+  @@index([sender_type])
+  @@map("appeals")
+}
+
+// Короткое имя организации, которой компания пишет сама.
+model Addressee {
+  id         Int      @id @default(autoincrement())
+  name       String   @unique
+  email      String   @default("")
+  is_active  Boolean  @default(true)
+  created_at DateTime @default(now())
+
+  @@map("addressees")
+}
+
+// База, на которую опирается подготовка ответа.
+// kind: norm — нормативный материал, phrase — типовая формулировка, example — пример ответа.
+// body пустой: в базе только название (и citation). Полный текст добавляется отдельно.
+model Material {
+  id         Int      @id @default(autoincrement())
+  kind       String
+  title      String
+  citation   String   @default("")
+  body       String   @default("") @db.Text
+  is_active  Boolean  @default(true)
+  created_at DateTime @default(now())
+  updated_at DateTime @updatedAt
+
+  @@unique([kind, title])
+  @@index([kind])
+  @@map("materials")
+}
+
+// Файл обращения. kind: source | generated_pdf | signed_scan.
+// Новый файл того же вида не затирает предыдущий — в карточке актуален последний.
+model AppealFile {
+  id             Int      @id @default(autoincrement())
+  appeal_id      Int
+  kind           String
+  original_name  String
+  stored_name    String   @unique
+  mime           String
+  size           Int
+  uploaded_by_id Int
+  created_at     DateTime @default(now())
+
+  appeal      Appeal @relation(fields: [appeal_id], references: [id], onDelete: Cascade)
+  uploaded_by User   @relation(fields: [uploaded_by_id], references: [id])
+
+  @@index([appeal_id, kind])
+  @@map("appeal_files")
+}
+
+// Действия вне карточек: пользователи, роли, справочники, базы.
+// title хранит имя записи на момент действия, чтобы история читалась и после удаления.
+model AuditEvent {
+  id         Int      @id @default(autoincrement())
+  user_id    Int?
+  entity     String
+  entity_id  Int?
+  action     String
+  title      String   @default("")
+  payload    Json?
+  created_at DateTime @default(now())
+
+  user User? @relation(fields: [user_id], references: [id], onDelete: SetNull)
+
+  @@index([created_at])
+  @@map("audit_events")
+}
+
+model AppealEvent {
+  id         Int      @id @default(autoincrement())
+  appeal_id  Int
+  user_id    Int
+  action     String
+  payload    Json?
+  created_at DateTime @default(now())
+
+  appeal Appeal @relation(fields: [appeal_id], references: [id], onDelete: Cascade)
+  user   User   @relation(fields: [user_id], references: [id])
+
+  @@index([appeal_id, created_at])
+  @@map("appeal_events")
+}

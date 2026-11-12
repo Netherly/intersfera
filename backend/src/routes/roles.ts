@@ -1,0 +1,132 @@
+import { Router } from 'express';
+import { Prisma } from '@prisma/client';
+import { prisma } from '../lib/prisma.js';
+import { asyncHandler } from '../lib/asyncHandler.js';
+import { changedKeys, logAudit } from '../lib/audit.js';
+import { requireAuth, requireSuperAdmin } from '../middleware/auth.js';
+import { PERMISSION_CATALOG, ALL_PERMISSION_KEYS } from '../lib/permissions.js';
+import { createRoleSchema, updateRoleSchema } from '../schemas/role.js';
+
+const router = Router();
+// Управление ролями и доступами — только супер-админ.
+router.use(requireAuth, requireSuperAdmin);
+
+// Каталог доступов проекта (для галочек при настройке роли).
+router.get('/permissions', (_req, res) => {
+  res.json(PERMISSION_CATALOG);
+});
+
+// Список ролей с числом пользователей.
+// Первой строкой — системный супер-админ (полный доступ, править/удалять нельзя).
+router.get(
+  '/',
+  asyncHandler(async (_req, res) => {
+    const [roles, superAdmins] = await Promise.all([
+      prisma.appRole.findMany({
+        orderBy: { id: 'asc' },
+        include: { _count: { select: { users: true } } },
+      }),
+      prisma.user.count({ where: { role: 'super_admin' } }),
+    ]);
+    const now = new Date();
+    const superAdminRow = {
+      id: -1,
+      name: 'Администратор (супер-админ)',
+      permissions: ALL_PERMISSION_KEYS,
+      is_system: true,
+      created_at: now,
+      updated_at: now,
+      users_count: superAdmins,
+    };
+    res.json([superAdminRow, ...roles.map((r) => ({ ...r, users_count: r._count.users }))]);
+  }),
+);
+
+// Создание роли.
+router.post(
+  '/',
+  asyncHandler(async (req, res) => {
+    const data = createRoleSchema.parse(req.body);
+    try {
+      const role = await prisma.appRole.create({
+        data: { name: data.name, permissions: data.permissions },
+      });
+      await logAudit({ userId: req.user!.id, entity: 'role', entityId: role.id, action: 'created', title: role.name });
+      res.status(201).json(role);
+    } catch (e) {
+      if (e instanceof Prisma.PrismaClientKnownRequestError && e.code === 'P2002') {
+        res.status(409).json({ error: 'Роль с таким названием уже существует' });
+        return;
+      }
+      throw e;
+    }
+  }),
+);
+
+// Редактирование роли (название и/или доступы).
+router.patch(
+  '/:id',
+  asyncHandler(async (req, res) => {
+    const id = Number(req.params.id);
+    const existing = await prisma.appRole.findUnique({ where: { id } });
+    if (!existing) {
+      res.status(404).json({ error: 'Роль не найдена' });
+      return;
+    }
+    if (existing.is_system) {
+      res.status(409).json({ error: 'Системную роль нельзя изменять' });
+      return;
+    }
+    const data = updateRoleSchema.parse(req.body);
+    try {
+      const role = await prisma.appRole.update({ where: { id }, data });
+      const fields = changedKeys(existing, data);
+      if (fields.length > 0) {
+        await logAudit({
+          userId: req.user!.id,
+          entity: 'role',
+          entityId: id,
+          action: 'updated',
+          title: role.name,
+          payload: { fields },
+        });
+      }
+      res.json(role);
+    } catch (e) {
+      if (e instanceof Prisma.PrismaClientKnownRequestError && e.code === 'P2002') {
+        res.status(409).json({ error: 'Роль с таким названием уже существует' });
+        return;
+      }
+      throw e;
+    }
+  }),
+);
+
+// Удаление роли (нельзя, если системная или к ней привязаны пользователи).
+router.delete(
+  '/:id',
+  asyncHandler(async (req, res) => {
+    const id = Number(req.params.id);
+    const existing = await prisma.appRole.findUnique({
+      where: { id },
+      include: { _count: { select: { users: true } } },
+    });
+    if (!existing) {
+      res.status(404).json({ error: 'Роль не найдена' });
+      return;
+    }
+    if (existing.is_system) {
+      res.status(409).json({ error: 'Системную роль нельзя удалить' });
+      return;
+    }
+    if (existing._count.users > 0) {
+      res.status(409).json({ error: 'К роли привязаны пользователи. Сначала переназначьте их' });
+      return;
+    }
+    await prisma.appRole.delete({ where: { id } });
+    await logAudit({ userId: req.user!.id, entity: 'role', entityId: id, action: 'deleted', title: existing.name });
+    res.json({ ok: true });
+  }),
+);
+
+export default router;
